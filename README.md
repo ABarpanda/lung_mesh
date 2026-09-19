@@ -16,6 +16,12 @@ Inter-patient anatomical variance, posture shifts, and framing discrepancies in 
 
 Develop a deep learning-based spatial alignment module that automatically maps raw 2D radiographs into a standardized, fixed-resolution canonical frame. Using a differentiable Spatial Transformer Network (STN) guided by key anatomical landmarks, the module normalizes orientation, scale, and translation dynamically.
 
+## Baseline
+
+Objective: To set up a baseline of the error experienced by machine learning models, such as diffusion models, while training on raw X-ray images before canonicalization.
+
+
+
 ## Phase 1
 
 ### Images
