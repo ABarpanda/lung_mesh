@@ -4,7 +4,7 @@
 
 Using deep learning to create a preprocessing module that aligns 2D X-rays to a standard geometric frame by aligning them to a fixed-resolution canonical frame reducing input variability and improve training for downstream models.
 
-#### Project Title
+### Project Title
 
 End-to-End Geometric Canonicalization for 2D Chest X-Ray Preprocessing and Downstream Robustness
 
@@ -19,8 +19,6 @@ Develop a deep learning-based spatial alignment module that automatically maps r
 ## Baseline
 
 Objective: To set up a baseline of the error experienced by machine learning models, such as diffusion models, while training on raw X-ray images before canonicalization.
-
-
 
 ## Phase 1
 
@@ -77,3 +75,26 @@ $$
 
 where I(x) is the original grayscale intensity and I'(x) is the transformed intensity.
 This custom transformation was found to be more effective for the specific objective of enhancing Canny edge detection in the evaluated X-ray images. It was motivated by the hypothesis that amplifying intensity transitions would improve the detection of anatomical boundaries.
+
+## Phase 2
+
+### Steps to proceed
+
+The process will include three major steps:
+
+1. Rotation
+2. Alignment
+3. Scaling
+
+For phase 2, we will focus mainly on scaling and alignment
+
+#### Alignment
+
+The objective of this code is to Center align the X-ray image. It is possible that the image is off-center, so we will use this score to bring the image to the center.
+We do this by making the chest X-ray is symmetric about the vertical axis. That means when we flip the image left to right, the image should be more or less symmetrical.  
+  
+How it works:  
+We iteratively remove two columns of pixels from the right on each turn, and then we will flip the image left to right and compare its deviation (that is, the difference between the image before and after getting flipped). Then we will add a single column of black pixels to the right and a single column of black pixels to the left. We continue this until the error is lesser than twice* the minimum error achieved yet.
+We repeat the same process for the left side as well  
+  
+(* Can be adjusted to reduce the compute time. If it is kept too high, suppose 3 or 4 times, then we might end up checking all the pixels in the image. If we keep it too low, suppose 1.01 times, then we might end up assuming zero movement to either left or right as the best option. )
