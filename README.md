@@ -86,15 +86,37 @@ The process will include three major steps:
 2. Alignment
 3. Scaling
 
-For phase 2, we will focus mainly on scaling and alignment
+For phase 2, we will focus mainly on alignment and scaling.
 
-#### Alignment
+### Alignment
 
 The objective of this code is to Center align the X-ray image. It is possible that the image is off-center, so we will use this score to bring the image to the center.
 We do this by making the chest X-ray is symmetric about the vertical axis. That means when we flip the image left to right, the image should be more or less symmetrical.  
   
-How it works:  
+#### How it works:-
+
 We iteratively remove two columns of pixels from the right on each turn, and then we will flip the image left to right and compare its deviation (that is, the difference between the image before and after getting flipped). Then we will add a single column of black pixels to the right and a single column of black pixels to the left. We continue this until the error is lesser than twice* the minimum error achieved yet.
 We repeat the same process for the left side as well  
   
 (* Can be adjusted to reduce the compute time. If it is kept too high, suppose 3 or 4 times, then we might end up checking all the pixels in the image. If we keep it too low, suppose 1.01 times, then we might end up assuming zero movement to either left or right as the best option. )
+
+### Scaling
+
+Often, we find X-ray images where the target might be an infant, and the lungs of the patient are located towards the upper half of the image. Hence, we can perform scaling to bring uniformity amongst all the X-ray images, irrespective of the size or shape of the lungs.
+
+For the scaling, we will first use a 2D U-net model to identify the exact position of lungs in the X-ray image. Following are the sources -
+
+* [Kevin Scott Mader - Training U-Net on TB Images to Segment Lungs on Kaggle](https://www.kaggle.com/code/kmader/training-u-net-on-tb-images-to-segment-lungs/)  
+* [Eduardo Mineo - U-Net lung segmentation (Montgomery + Shenzhen) on Kaggle](https://www.kaggle.com/code/eduardomineo/u-net-lung-segmentation-montgomery-shenzhen)
+
+Instead of training a new model, we can directly use the segmentation model trained by them. The UNet lung segmentation model was trained on two small datasets: the Montgomery dataset and the Shenzhen frontal X-ray dataset. These datasets are generally used for tuberculosis-related abnormalities detection. This model will be used as a foundation to identify the lung as well as to build a bounding box around our organs of interest.  
+After creating the bounding box for the target image, we can perform scaling such that the position and proportion of the area of interest (lungs in particular) is similar for all images in the dataset.
+
+#### Choice of position and proportion -
+
+After performing alignment, we have already fixed the horizontal position of the image. To fix the vertical position of the image, we draw inspiration from the photographic principles. We will try to make sure that the lung covers two-thirds of the vertical height of the whole image. <!-- However, the volume of the lungs in the image is also a point of concern, but it will be dealt with in phase 3. -->
+
+#### Problems faced -
+
+1. Resolution - If the original image is of 64 x 64 dimensions and we try to zoom in on a particular section of the image, the image may get pixelated. Since we are working on large images of dimensions 2048 x 2048, the image can be zoomed. However, the model that we are using was trained on a 512 x 512 image dataset. So even if we take a 1/16th part of the image, our model will be able to successfully segment the lungs apart from the background X-ray.
+2. Asymmetry - It is possible that the lungs are not symmetrical. Biology dictates that the right lung on the X-ray is slightly bulged inwards due to the position of the heart. This may cause the left lung to elongate downwards or may not be in the ideal shape.

@@ -6,6 +6,10 @@ ultralytics>=8.4.150
 pydicom>=3.0.0
 tqdm>=4.70.0
 scikit-learn>=1.9.1
+tensorflow==2.21.0
+tf2onnx
+onnx
+onnx2torch
 
 --extra-index-url https://download.pytorch.org/whl/cu130
 
