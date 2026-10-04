@@ -10,8 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
-test_arr = np.array([[1,2,3],[4,5,6],[7,8,9]])
-
 image = Image.open(
     r"D:\Projects\lung_mesh\dataset\JSRT_images\JPCNN060.png"
 ).convert("L")
@@ -24,25 +22,15 @@ def find_flip_difference(image_array: np.ndarray) -> int:
     diff = image_array.astype(np.int32) - flipped_array.astype(np.int32)
     return np.sum(np.abs(diff))
 
-# print(find_flip_difference(test_arr))
-
 def move_image_right(image_array: np.array, n: int) -> np.array:
-    # print(image_array.shape)
     columns_removed = np.array([i[:-2*n] for i in image_array])
-    # print(columns_removed.shape)
     array_restored = np.array([[0]*n+list(row)+[0]*n for row in columns_removed])
-    # print(array_restored)
     return array_restored
 
 def move_image_left(image_array: np.array, n: int) -> np.array:
-    # print(image_array.shape)
     columns_removed = np.array([i[2*n:] for i in image_array])
-    # print(columns_removed.shape)
     array_restored = np.array([[0]*n+list(row)+[0]*n for row in columns_removed])
-    # print(array_restored)
     return array_restored
-
-# print(move_image_right(array,2))
 
 def align(image_array):
     error_dict = {}

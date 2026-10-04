@@ -16,17 +16,23 @@ Inter-patient anatomical variance, posture shifts, and framing discrepancies in 
 
 Develop a deep learning-based spatial alignment module that automatically maps raw 2D radiographs into a standardized, fixed-resolution canonical frame. Using a differentiable Spatial Transformer Network (STN) guided by key anatomical landmarks, the module normalizes orientation, scale, and translation dynamically.
 
+#### Motivation
+
+Disease and anomaly detection using U-Net is a key use case of AI in the medical field. We need to train the AI models as quickly as possible with the highest accuracy. Using a good structured dataset is a pivotal factor in model training. Human body. The X-ray can be performed on infants, and on elders above the age of 60. It is possible that their body shape is slightly deviated from the ideal outline of a chest.  
+For infants, the size of the chest and lungs will be much smaller with respect to the frame of the image. It is also possible that the test subject is slightly off-center or rotated in the frame. These small errors compound while training the AI model. In this paper, we propose an algorithm to perform preprocessing on the dataset that will be used for training the AI model.
+
 ## Baseline
 
 Objective: To set up a baseline of the error experienced by machine learning models, such as diffusion models, while training on raw X-ray images before canonicalization.
 
 ## Phase 1
 
+To develop Lung Mesh, we take inspiration from the Mediapipe Face Mesh. It is a machine learning system developed by Google for real-time facial landmark detection. It identifies 468 three-dimensional landmarks across the human face using a single camera without requiring a depth sensor. The system first detects the face and then estimates the position of these landmarks to construct a 3D facial mesh.
+
 ### Images
 
-[Canonical face model UV visualization](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png)
-
-[Face landmarks mesh map](https://github.com/tensorflow/tfjs-models/blob/master/face-landmarks-detection/mesh_map.jpg)
+![https://share.google/9EDpLnTtkCjRlcbp0](public/face_mesh.png)
+![https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png](public/face_mask.png)
 
 ### Papers
 
@@ -62,7 +68,7 @@ We can use edge detection techniques by using various kernels and/or Canny edge 
 
 #### Challenges faced -
 
-1. We cannot use Canny or Sobel edge detection algorithms because they rely on a binary image. Since we were unable to binarize the image, canyon soil filters perform extremely badly.
+1. We cannot use Canny or Sobel edge detection algorithms because they rely on a binary image. Since we were unable to binarize the image, Canny and Sobel filters perform extremely badly.
 2. The X-ray images are continuous and real-world images, which are grayscale, not black and white. The gradient is very low between the black and white portions. The gradual shading between the black and white parts, with no well defined boundary, poses a major challenge for edge detection.
 
 #### Solution proposed -
@@ -83,12 +89,13 @@ This custom transformation was found to be more effective for the specific objec
 The process will include three major steps:
 
 1. Rotation
-2. Alignment
+2. Horizontal Alignment
 3. Scaling
+4. Vertical Alignment
 
 For phase 2, we will focus mainly on alignment and scaling.
 
-### Alignment
+### Horizontal Alignment
 
 The objective of this code is to Center align the X-ray image. It is possible that the image is off-center, so we will use this score to bring the image to the center.
 We do this by making the chest X-ray is symmetric about the vertical axis. That means when we flip the image left to right, the image should be more or less symmetrical.  
@@ -118,5 +125,18 @@ After performing alignment, we have already fixed the horizontal position of the
 
 #### Problems faced -
 
-1. Resolution - If the original image is of 64 x 64 dimensions and we try to zoom in on a particular section of the image, the image may get pixelated. Since we are working on large images of dimensions 2048 x 2048, the image can be zoomed. However, the model that we are using was trained on a 512 x 512 image dataset. So even if we take a 1/16th part of the image, our model will be able to successfully segment the lungs apart from the background X-ray.
+1. Resolution - If the original image is of 64 x 64 dimensions and we try to zoom in on a particular section of the image; the image may get pixelated.
 2. Asymmetry - It is possible that the lungs are not symmetrical. Biology dictates that the right lung on the X-ray is slightly bulged inwards due to the position of the heart. This may cause the left lung to elongate downwards or may not be in the ideal shape.
+
+#### Solution Proposed -
+
+1. Since we are working on large images of dimensions 2048 x 2048, the image can be zoomed. However, the model that we are using was trained on a 512 x 512 image dataset. So even if we take a 1/16th part of the image, our model will be able to successfully segment the lungs apart from the background X-ray.
+
+### Vertical Alignment
+
+Now that we have established that the lung's vertical height is two-thirds of the total height of the image, we will now translate the lungs in the vertical direction.  
+Here, we can go through any of the two routes:
+
+1. Moving the bounding box of the lungs so that they touch the top edge of the image.
+    * We have empirically determined that many bounding boxes already touch the top edge of the frame, it would be computationally simpler to perform no actions on them.
+2. Translating the image vertically down such that the bounding box is located one-sixth of the total height from above as well as from below.
