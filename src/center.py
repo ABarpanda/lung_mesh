@@ -6,13 +6,14 @@ We iteratively remove two columns of pixels from the right on each turn, and the
 We repeat the same process for the left side as well. 
 '''
 
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
-image = Image.open(
-    r"D:\Projects\lung_mesh\dataset\JSRT_images\JPCNN060.png"
-).convert("L")
+IMAGE_PATH = r"D:\Projects\lung_mesh\dataset\JSRT_images\JPCNN003.png"
+
+image = Image.open(IMAGE_PATH).convert("L")
 array = np.asarray(image)
 
 array_flipped = np.fliplr(array)
@@ -32,12 +33,12 @@ def move_image_left(image_array: np.array, n: int) -> np.array:
     array_restored = np.array([[0]*n+list(row)+[0]*n for row in columns_removed])
     return array_restored
 
-def align(image_array):
+def align(image_array, k=2, save_path=None):
     error_dict = {}
     error_dict[0] = find_flip_difference(move_image_right(image_array, 0))
     error_dict[0] = find_flip_difference(move_image_left(image_array, 0))
     i = 0
-    while max(error_dict.values())<1.5*min(error_dict.values()):
+    while max(error_dict.values()) < k*min(error_dict.values()):
         error_dict[i] = find_flip_difference(move_image_right(image_array, i))
         error_dict[-i] = find_flip_difference(move_image_left(image_array, i))
         i+=1
@@ -52,13 +53,18 @@ def align(image_array):
     print(f"Minimum error index = {min_error_index}")
 
     if min_error_index>0:
-        return move_image_right(image_array, min_error_index)
+        result_array = move_image_right(image_array, min_error_index)
     elif min_error_index<0:
-        return move_image_left(image_array, -min_error_index)
+        result_array = move_image_left(image_array, -min_error_index)
     else:
-        return image_array
+        result_array = image_array
+    
+    if save_path:
+        plt.imsave(save_path, result_array, cmap="gray")
 
-aligned = align(array)
+    return result_array
+
+aligned = align(array, k=3, save_path=f"./results/{os.path.splitext(os.path.basename(IMAGE_PATH))[0]}_aligned.png")
 
 fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 

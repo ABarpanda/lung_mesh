@@ -64,8 +64,8 @@ def draw(image_path, mode=1, out_dir="results"):
     
     Input:
         image_path: path to the input image  
-        mode=1: draw per-lung boxes  
-        mode=2: draw a single box around both lungs  
+        mode=1: draw a single box around both lungs 
+        mode=2: draw per-lung boxes
         out_dir: directory to save the output image  
     
     Output:
@@ -74,20 +74,20 @@ def draw(image_path, mode=1, out_dir="results"):
     name = os.path.splitext(os.path.basename(image_path))[0]
     prob, mask, image = segment_lungs(image_path, model, THRESHOLD)
     if mode==1:
-        lung_boxes = mask_to_lung_bboxes(mask)
-        print("Per lung  :", lung_boxes)
-        boxed = draw_bboxes(image, lung_boxes)
-        imwrite(os.path.join(out_dir, f"{name}_bbox.png"), boxed)
-    elif mode==2:
         both_box = mask_to_bbox(mask)
         print("Both lungs:", both_box)
         single_box = draw_bboxes(image, [both_box])
         imwrite(os.path.join(out_dir, f"{name}_bbox.png"), single_box)
+    elif mode==2:
+        lung_boxes = mask_to_lung_bboxes(mask)
+        print("Per lung  :", lung_boxes)
+        boxed = draw_bboxes(image, lung_boxes)
+        imwrite(os.path.join(out_dir, f"{name}_bbox.png"), boxed)
     else:
         raise ValueError(f"Unknown mode {mode}. Options: 1=per lung, 2=both lungs")
 
 if __name__=="__main__":
-    IMAGE_PATH = "dataset/JSRT_images/JPCLN042.png"
+    IMAGE_PATH = "dataset/JSRT_images/JPCNN003.png"
     model = load_model(MODEL_PATH)
-    # prob, mask, image = segment_lungs(image_path, model, THRESHOLD)
-    draw(IMAGE_PATH, mode=2)
+    prob, mask, image = segment_lungs(IMAGE_PATH, model, THRESHOLD)
+    draw(IMAGE_PATH, mode=1)

@@ -108,7 +108,8 @@ def get_outputs(image_path, model=None, model_path=MODEL_PATH, threshold=THRESHO
     return mask_path, overlay_path, lungs_path
 
 def main():
-    get_outputs(r"dataset\JSRT_images\JPCNN060.png")
+    get_outputs(r"dataset\JSRT_images\JPCNN003.png")
+    # get_outputs(r"results\JPCNN003_aligned.png")
 
 if __name__ == "__main__":
     main()
