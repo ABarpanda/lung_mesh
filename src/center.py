@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
-IMAGE_PATH = r"D:\Projects\lung_mesh\dataset\JSRT_images\JPCNN003.png"
+IMAGE_PATH = r"D:\Projects\lung_mesh\dataset\JSRT_images\JPCLN095.png"
 
 image = Image.open(IMAGE_PATH).convert("L")
 array = np.asarray(image)
@@ -64,21 +64,23 @@ def align(image_array, k=2, save_path=None):
 
     return result_array
 
-aligned = align(array, k=3, save_path=f"./results/{os.path.splitext(os.path.basename(IMAGE_PATH))[0]}_aligned.png")
+if __name__ == "__main__":
+        
+    aligned = align(array, k=2, save_path=f"./results/{os.path.splitext(os.path.basename(IMAGE_PATH))[0]}_aligned.png")
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
-mid_x = (array.shape[1] - 1) / 2
+    mid_x = (array.shape[1] - 1) / 2
 
-axes[0].imshow(array, cmap="gray")
-axes[0].axvline(x=mid_x, color="red", linestyle="--", linewidth=1.5)
-axes[0].set_title("Original")
-axes[0].axis("off")
+    axes[0].imshow(array, cmap="gray")
+    axes[0].axvline(x=mid_x, color="red", linestyle="--", linewidth=1.5)
+    axes[0].set_title("Original")
+    axes[0].axis("off")
 
-axes[1].imshow(aligned, cmap="gray")
-axes[1].axvline(x=mid_x, color="red", linestyle="--", linewidth=1.5)
-axes[1].set_title("Aligned")
-axes[1].axis("off")
+    axes[1].imshow(aligned, cmap="gray")
+    axes[1].axvline(x=mid_x, color="red", linestyle="--", linewidth=1.5)
+    axes[1].set_title("Aligned")
+    axes[1].axis("off")
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()

@@ -87,7 +87,7 @@ def draw(image_path, mode=1, out_dir="results"):
         raise ValueError(f"Unknown mode {mode}. Options: 1=per lung, 2=both lungs")
 
 if __name__=="__main__":
-    IMAGE_PATH = "dataset/JSRT_images/JPCNN003.png"
+    IMAGE_PATH = "dataset/JSRT_images/JPCLN095.png"
     model = load_model(MODEL_PATH)
     prob, mask, image = segment_lungs(IMAGE_PATH, model, THRESHOLD)
     draw(IMAGE_PATH, mode=1)

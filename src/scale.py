@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 
-
 def normalize_lung_roi(
     image: np.ndarray,
     bbox: tuple[int, int, int, int],
