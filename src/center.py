@@ -33,12 +33,12 @@ def move_image_left(image_array: np.array, n: int) -> np.array:
     array_restored = np.array([[0]*n+list(row)+[0]*n for row in columns_removed])
     return array_restored
 
-def align(image_array, k=2, save_path=None):
+def align(image_array, k=2, save_path=None, MAX_SHIFT=100):
     error_dict = {}
     error_dict[0] = find_flip_difference(move_image_right(image_array, 0))
     error_dict[0] = find_flip_difference(move_image_left(image_array, 0))
     i = 0
-    while max(error_dict.values()) < k*min(error_dict.values()):
+    while i <= MAX_SHIFT and max(error_dict.values()) < k*min(error_dict.values()):
         error_dict[i] = find_flip_difference(move_image_right(image_array, i))
         error_dict[-i] = find_flip_difference(move_image_left(image_array, i))
         i+=1
@@ -62,11 +62,11 @@ def align(image_array, k=2, save_path=None):
     if save_path:
         plt.imsave(save_path, result_array, cmap="gray")
 
-    return result_array
+    return result_array, min_error_index
 
 if __name__ == "__main__":
         
-    aligned = align(array, k=2, save_path=f"./results/{os.path.splitext(os.path.basename(IMAGE_PATH))[0]}_aligned.png")
+    aligned, min_error_index = align(array, k=2, save_path=f"./results/{os.path.splitext(os.path.basename(IMAGE_PATH))[0]}_aligned.png")
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 

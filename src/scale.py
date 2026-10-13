@@ -5,7 +5,7 @@ def normalize_lung_roi(
     image: np.ndarray,
     bbox: tuple[int, int, int, int],
     target_shape: tuple[int, int] = (2048, 2048),
-    target_height_ratio: float = 2.0 / 3.0,
+    target_height_ratio: float = 3.0 / 4.0,
     enforce_width_constraint: bool = True,
     border_mode: int = cv2.BORDER_CONSTANT,
     border_value: int | float | tuple = 0,

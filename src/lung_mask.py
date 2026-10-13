@@ -83,7 +83,7 @@ def imwrite(path: str, img: np.ndarray):
         raise IOError(f"Could not encode {path}")
     buf.tofile(path)  # unicode-safe on Windows
 
-def get_outputs(image_path, model=None, model_path=MODEL_PATH, threshold=THRESHOLD, out_dir="results"):
+def get_outputs(image_path, model=None, model_path=MODEL_PATH, threshold=THRESHOLD, out_dir="results", save=True):
     """Saves the mask, overlay and lung-only image. Returns their paths."""
     model = model or load_model(model_path)          # load once, reuse for many images
     prob, mask, image = segment_lungs(image_path, model, threshold)
@@ -93,17 +93,20 @@ def get_outputs(image_path, model=None, model_path=MODEL_PATH, threshold=THRESHO
 
     # 1) binary mask (0/255), original size
     mask_path = os.path.join(out_dir, f"{name}_mask.png")
-    imwrite(mask_path, mask)
+    if save:
+        imwrite(mask_path, mask)
 
     # 2) overlay: X-ray with the mask in red
     overlay = make_overlay(image, mask)
     overlay_path = os.path.join(out_dir, f"{name}_overlay.png")
-    imwrite(overlay_path, overlay)
+    if save:
+        imwrite(overlay_path, overlay)
 
     # 3) lungs only: everything outside the mask becomes black
     lungs = cv2.bitwise_and(image, image, mask=mask)
     lungs_path = os.path.join(out_dir, f"{name}_lungs.png")
-    imwrite(lungs_path, lungs)
+    if save:
+        imwrite(lungs_path, lungs)
 
     return mask_path, overlay_path, lungs_path
 
