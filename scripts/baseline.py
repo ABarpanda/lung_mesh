@@ -1,333 +1,452 @@
+"""
+JSRT lung nodule classification with a pretrained ResNet (PyTorch).
+
+Task
+----
+Binary classification of the nodules in the JSRT dataset using the
+malignancy labels from the metadata CSV (malignant = 1, benign = 0).
+
+How to run
+----------
+Edit CONFIG below if needed, then run:
+
+    python jsrt_resnet_train_v2.py
+
+Outputs
+-------
+Each run creates runs/<timestamp>_<arch>/ containing:
+    training.log         full log (console output is saved here too)
+    config.json          settings used for the run
+    split.csv            train / val / test assignment for every image
+    history.csv          one row per epoch: loss, accuracy, error, AUC,
+                         sensitivity, specificity, learning rate, time
+    best_model.pt        checkpoint with the best validation AUC
+    last_model.pt        checkpoint from the last epoch trained
+    test_metrics.json    final metrics on the held-out test set
+    test_predictions.csv per-image test probabilities and predictions
+"""
+
+import json
+import logging
 import os
-import math
+import random
 import time
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms, utils
 from PIL import Image
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset
+from torchvision import models, transforms
 
-class FlatImageDataset(Dataset):
-    def __init__(self, root_dir: str, transform=None):
-        self.root_dir = root_dir
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+CONFIG = {
+    "image_dir": "./RSNA_output",          # folder with the converted JPEG chest X-rays
+    "label_csv": "./dataset/RSNA.csv",           # metadata file with patientId and Target
+    "filename_column": "patientId",               # column used for the image id
+    "label_column": "Target",                     # column used for the label
+    "positive_label": 1,                           # value in label_column that means class 1
+    "output_root": "./runs",                     # where run folders are written
+    "arch": "resnet34",                            # "resnet18", "resnet34", or "resnet50"
+    "img_size": 512,                               # network input size (images are 2048x2048)
+    "epochs": 20,
+    "batch_size": 16,
+    "lr": 1e-4,
+    "weight_decay": 1e-4,
+    "dropout": 0.3,
+    "patience": 3,                                 # early stopping patience (epochs)
+    "threshold": 0.5,                              # probability cutoff for the positive class
+    "seed": 42,
+    "num_workers": 2,
+}
+
+ARCHS = {
+    "resnet18": (models.resnet18, models.ResNet18_Weights.DEFAULT),
+    "resnet34": (models.resnet34, models.ResNet34_Weights.DEFAULT),
+    "resnet50": (models.resnet50, models.ResNet50_Weights.DEFAULT),
+}
+
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+# =============================================================================
+# Utilities
+# =============================================================================
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def setup_logger(log_path: str) -> logging.Logger:
+    """Log to both the console and a training.log file."""
+    logger = logging.getLogger("jsrt")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    fmt = logging.Formatter("%(asctime)s | %(message)s")
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(fmt)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    return logger
+
+
+def load_image(path: str) -> Image.Image:
+    """Load a JSRT image as 8-bit grayscale. Handles PNG and the raw .IMA format."""
+    if path.lower().endswith(".ima"):
+        raw = np.fromfile(path, dtype=">u2").reshape(2048, 2048).astype(np.float32)
+        raw = (raw - raw.min()) / (raw.max() - raw.min() + 1e-8)
+        return Image.fromarray((raw * 255).astype(np.uint8))
+    return Image.open(path).convert("L")
+
+
+def load_labels(cfg: dict, log: logging.Logger) -> pd.DataFrame:
+    """Read metadata CSV and return image filenames with binary labels.
+
+    The project CSVs use different schemas across datasets. This function accepts
+    both the legacy JSRT columns (study_id/state) and the current RSNA columns
+    (patientId/Target) and normalizes them to a common filename/label frame.
+    """
+    meta = pd.read_csv(cfg["label_csv"]).copy()
+
+    filename_col = cfg.get("filename_column")
+    if filename_col is None or filename_col not in meta.columns:
+        for candidate in ["study_id", "patientId", "filename", "image_id", "id", "file_name"]:
+            if candidate in meta.columns:
+                filename_col = candidate
+                break
+        else:
+            raise KeyError(f"Could not find a filename column in {cfg['label_csv']}. Columns: {list(meta.columns)}")
+
+    label_col = cfg.get("label_column")
+    if label_col is None or label_col not in meta.columns:
+        for candidate in ["Target", "target", "label", "state", "class", "class_id"]:
+            if candidate in meta.columns:
+                label_col = candidate
+                break
+        else:
+            raise KeyError(f"Could not find a label column in {cfg['label_csv']}. Columns: {list(meta.columns)}")
+
+    meta = meta[[filename_col, label_col]].dropna(subset=[filename_col, label_col]).copy()
+    meta = meta.rename(columns={filename_col: "filename", label_col: "raw_label"})
+
+    def filename_to_path(value):
+        value = str(value).strip()
+        if not value:
+            return None
+        return value.rsplit(".", 1)[0] if "." in value else value
+
+    meta["filename"] = meta["filename"].map(filename_to_path)
+
+    def parse_label(raw_value):
+        if pd.isna(raw_value):
+            return None
+        if isinstance(raw_value, str):
+            value = raw_value.strip().lower()
+            if value in {"", "nan", "none", "null"}:
+                return None
+            if value in {"0", "0.0", "false", "benign", "negative"}:
+                return 0
+            if value in {"1", "1.0", "true", "malignant", "positive"}:
+                return 1
+            if cfg.get("positive_label") is not None:
+                return int(str(raw_value).strip().lower() == str(cfg["positive_label"]).strip().lower())
+            return int(value == "1")
+
+        try:
+            value = float(raw_value)
+            return 1 if value > 0 else 0
+        except (TypeError, ValueError):
+            return None
+
+    meta["label"] = meta["raw_label"].map(parse_label)
+    meta = meta.dropna(subset=["filename", "label"]).drop_duplicates(subset=["filename"], keep="first")
+    meta = meta[["filename", "label"]].reset_index(drop=True)
+
+    def resolve_image_path(fname: str):
+        base = os.path.basename(fname)
+        candidates = [base, f"{base}.jpeg", f"{base}.jpg", f"{base}.png", f"{base}.dcm"]
+        for candidate in candidates:
+            full = os.path.join(cfg["image_dir"], candidate)
+            if os.path.exists(full):
+                return full
+        return None
+
+    meta["exists"] = meta["filename"].map(resolve_image_path)
+    missing = int((meta["exists"].isna()).sum())
+    if missing:
+        log.warning(f"{missing} images listed in the metadata were not found in {cfg['image_dir']} and will be skipped")
+    meta = meta[meta["exists"].notna()].copy()
+    meta["filename"] = meta["exists"].map(os.path.basename)
+    meta = meta[["filename", "label"]].reset_index(drop=True)
+
+    n_pos = int(meta["label"].sum())
+    log.info(f"Labels from '{label_col}' (positive = '{cfg.get('positive_label', 'auto')}'): "
+             f"{len(meta)} images | positive: {n_pos} | negative: {len(meta) - n_pos}")
+    return meta
+
+
+# =============================================================================
+# Data
+# =============================================================================
+def build_transforms(img_size: int):
+    # No horizontal flips: chest anatomy is asymmetric (heart on the left).
+    train_tf = transforms.Compose([
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize((img_size, img_size)),
+        transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ])
+    eval_tf = transforms.Compose([
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ])
+    return train_tf, eval_tf
+
+
+class JSRTDataset(Dataset):
+    def __init__(self, df: pd.DataFrame, image_dir: str, transform):
+        self.df = df.reset_index(drop=True)
+        self.image_dir = image_dir
         self.transform = transform
-        valid_exts = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
-        self.image_paths = [
-            os.path.join(root, f)
-            for root, _, files in os.walk(root_dir)
-            for f in files
-            if os.path.splitext(f.lower())[1] in valid_exts
-        ]
-        if not self.image_paths:
-            raise FileNotFoundError(f"No valid image files found in '{root_dir}'")
 
-    def __len__(self):
-        return len(self.image_paths)
+    def __len__(self) -> int:
+        return len(self.df)
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        with Image.open(img_path) as img:
-            image = img.convert("RGB")
-        if self.transform:
-            image = self.transform(image)
-        return image, 0
-
-# ------------------------------------------------------------------------------
-# 1. Sinusoidal Time Embedding & Building Blocks
-# ------------------------------------------------------------------------------
-
-class SinusoidalPositionEmbeddings(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, time_step: torch.Tensor) -> torch.Tensor:
-        device = time_step.device
-        half_dim = self.dim // 2
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-        embeddings = time_step[:, None] * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        return embeddings
+        row = self.df.iloc[idx]
+        img = load_image(os.path.join(self.image_dir, row["filename"]))
+        return self.transform(img), torch.tensor(row["label"], dtype=torch.float32)
 
 
-class ConvBlock(nn.Module):
-    """Convolutional block with GroupNorm, GELU, and Time-Embedding injection."""
-    def __init__(self, in_channels: int, out_channels: int, time_emb_dim: int):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.norm1 = nn.GroupNorm(min(8, out_channels), out_channels)
-        self.time_mlp = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(time_emb_dim, out_channels)
-        )
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.norm2 = nn.GroupNorm(min(8, out_channels), out_channels)
-        self.act = nn.GELU()
+# =============================================================================
+# Model
+# =============================================================================
+def build_model(arch: str, dropout: float) -> nn.Module:
+    ctor, weights = ARCHS[arch]
+    model = ctor(weights=weights)  # ImageNet-pretrained initialization
+    model.fc = nn.Sequential(
+        nn.Dropout(dropout),
+        nn.Linear(model.fc.in_features, 1),  # one logit for binary classification
+    )
+    return model
 
-        self.residual_conv = (
-            nn.Conv2d(in_channels, out_channels, kernel_size=1)
-            if in_channels != out_channels else nn.Identity()
-        )
 
-    def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
-        residual = self.residual_conv(x)
-        h = self.act(self.norm1(self.conv1(x)))
-        # Project and broadcast time conditioning into spatial dims [B, C, 1, 1]
-        h = h + self.time_mlp(t_emb)[:, :, None, None]
-        h = self.act(self.norm2(self.conv2(h)))
-        return h + residual
+def save_checkpoint(path: str, model: nn.Module, cfg: dict, epoch: int, val_auc: float) -> None:
+    """Save weights with the settings needed to reload the model later."""
+    torch.save({
+        "model_state": model.state_dict(),
+        "arch": cfg["arch"],
+        "img_size": cfg["img_size"],
+        "threshold": cfg["threshold"],
+        "epoch": epoch,
+        "val_auc": val_auc,
+    }, path)
 
-# ------------------------------------------------------------------------------
-# 2. Lightweight U-Net Architecture
-# ------------------------------------------------------------------------------
 
-class SimpleUNet(nn.Module):
-    def __init__(self, in_channels: int = 3, out_channels: int = 3, base_dim: int = 64):
-        super().__init__()
-        time_dim = base_dim * 4
-        self.time_embed = nn.Sequential(
-            SinusoidalPositionEmbeddings(base_dim),
-            nn.Linear(base_dim, time_dim),
-            nn.GELU(),
-            nn.Linear(time_dim, time_dim),
-        )
+def load_checkpoint(path: str, device: torch.device) -> nn.Module:
+    ckpt = torch.load(path, map_location=device)
+    model = build_model(ckpt["arch"], dropout=0.0)
+    model.load_state_dict(ckpt["model_state"])
+    return model.to(device)
 
-        # Encoder (Downsampling)
-        self.down1 = ConvBlock(in_channels, base_dim, time_dim)
-        self.pool1 = nn.MaxPool2d(2)
-        self.down2 = ConvBlock(base_dim, base_dim * 2, time_dim)
-        self.pool2 = nn.MaxPool2d(2)
 
-        # Bottleneck
-        self.mid1 = ConvBlock(base_dim * 2, base_dim * 4, time_dim)
-        self.mid2 = ConvBlock(base_dim * 4, base_dim * 2, time_dim)
+# =============================================================================
+# Training and evaluation
+# =============================================================================
+def run_epoch(model, loader, criterion, optimizer, device):
+    """One pass over a loader. Trains if an optimizer is given, otherwise evaluates."""
+    training = optimizer is not None
+    model.train(training)
+    total_loss, probs, targets = 0.0, [], []
 
-        # Decoder (Upsampling)
-        self.up2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        self.upconv2 = ConvBlock(base_dim * 4, base_dim, time_dim)
-        self.up1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        self.upconv1 = ConvBlock(base_dim * 2, base_dim, time_dim)
+    with torch.set_grad_enabled(training):
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            logits = model(x).squeeze(1)
+            loss = criterion(logits, y)
 
-        self.out_conv = nn.Conv2d(base_dim, out_channels, kernel_size=1)
+            if training:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        t_emb = self.time_embed(t)
+            total_loss += loss.item() * len(y)
+            probs.extend(torch.sigmoid(logits).detach().cpu().numpy())
+            targets.extend(y.cpu().numpy())
 
-        # Down
-        x1 = self.down1(x, t_emb)
-        x2 = self.down2(self.pool1(x1), t_emb)
+    probs, targets = np.array(probs), np.array(targets)
+    return total_loss / len(targets), probs, targets
 
-        # Mid
-        m = self.mid1(self.pool2(x2), t_emb)
-        m = self.mid2(m, t_emb)
 
-        # Up with skip-connections
-        u2 = self.up2(m)
-        u2 = self.upconv2(torch.cat([u2, x2], dim=1), t_emb)
-        u1 = self.up1(u2)
-        u1 = self.upconv1(torch.cat([u1, x1], dim=1), t_emb)
+def compute_metrics(targets: np.ndarray, probs: np.ndarray, threshold: float) -> dict:
+    """Accuracy, error rate, sensitivity, specificity, and AUC."""
+    preds = (probs >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(targets, preds, labels=[0, 1]).ravel()
+    accuracy = (tp + tn) / (tn + fp + fn + tp)
+    return {
+        "auc": float(roc_auc_score(targets, probs)),
+        "accuracy": float(accuracy),
+        "error": float(1.0 - accuracy),
+        "sensitivity": float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0,
+        "specificity": float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0,
+        "tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn),
+    }
 
-        return self.out_conv(u1)
 
-# ------------------------------------------------------------------------------
-# 3. Diffusion Forward & Reverse Process Container
-# ------------------------------------------------------------------------------
+# =============================================================================
+# Main
+# =============================================================================
+def main():
+    cfg = CONFIG
 
-class Diffusion:
-    def __init__(self, timesteps: int = 1000, beta_start: float = 1e-4, beta_end: float = 0.02, device: str = "cuda"):
-        self.timesteps = timesteps
-        self.device = device
+    # ---- Output folder, config, and logging ---------------------------------
+    run_name = f"{datetime.now():%Y%m%d_%H%M%S}_{cfg['arch']}"
+    run_dir = os.path.join(cfg["output_root"], run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    log = setup_logger(os.path.join(run_dir, "training.log"))
+    with open(os.path.join(run_dir, "config.json"), "w") as f:
+        json.dump(cfg, f, indent=2)
+    log.info(f"Run directory: {run_dir}")
 
-        # Precompute diffusion schedule constants
-        self.beta = torch.linspace(beta_start, beta_end, timesteps, device=device)
-        self.alpha = 1.0 - self.beta
-        self.alpha_hat = torch.cumprod(self.alpha, dim=0)
+    # ---- Reproducibility and device -----------------------------------------
+    set_seed(cfg["seed"])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log.info(f"Using device: {device}")
 
-    def q_sample(self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor = None):
-        """Forward diffusion: adds noise to initial image x_0 at step t."""
-        if noise is None:
-            noise = torch.randn_like(x_0)
-        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None, None]
-        sqrt_one_minus_alpha_hat = torch.sqrt(1.0 - self.alpha_hat[t])[:, None, None, None]
-        return sqrt_alpha_hat * x_0 + sqrt_one_minus_alpha_hat * noise, noise
+    # ---- Labels and stratified 70 / 15 / 15 split ---------------------------
+    df = load_labels(cfg, log)
 
-    @torch.no_grad()
-    def p_sample_loop(self, model: nn.Module, num_samples: int, image_size: int, channels: int = 3):
-        """Reverse diffusion: generates samples from pure Gaussian noise."""
-        model.eval()
-        x = torch.randn((num_samples, channels, image_size, image_size), device=self.device)
+    train_df, test_df = train_test_split(df, test_size=0.15, stratify=df["label"],
+                                         random_state=cfg["seed"])
+    train_df, val_df = train_test_split(train_df, test_size=0.1765,
+                                        stratify=train_df["label"], random_state=cfg["seed"])
 
-        for i in reversed(range(self.timesteps)):
-            t = torch.full((num_samples,), i, device=self.device, dtype=torch.long)
-            predicted_noise = model(x, t)
-
-            alpha = self.alpha[i]
-            alpha_hat = self.alpha_hat[i]
-            beta = self.beta[i]
-
-            if i > 0:
-                noise = torch.randn_like(x)
-            else:
-                noise = torch.zeros_like(x)
-
-            # DDPM mean formulation: mu_theta(x_t, t)
-            x = (1 / torch.sqrt(alpha)) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
-
-        model.train()
-        # Rescale [-1, 1] to [0, 1] for saving
-        x = (x.clamp(-1, 1) + 1) / 2
-        return x
-
-# ------------------------------------------------------------------------------
-# 4. Verbose Training Loop
-# ------------------------------------------------------------------------------
-
-def train():
-    # Hyperparameters
-    IMG_SIZE = 128
-    BATCH_SIZE = 8
-    START_EPOCH = 490
-    EPOCHS = 1000
-    OUTPUT_DIR = "dataset/diffusion_outputs"
-    CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, "checkpoints", f"model_epoch_{START_EPOCH}.pt")
-    LR = 2e-4
-    TIMESTEPS = 1000
-    DATASET_PATH = "dataset/JSRT_images"
-    OUTPUT_DIR = "dataset/diffusion_outputs"
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    os.makedirs(os.path.join(OUTPUT_DIR, "checkpoints"), exist_ok=True)
-    os.makedirs(os.path.join(OUTPUT_DIR, "samples"), exist_ok=True)
-
-    # Data Pipeline (normalized to [-1, 1])
-    transform = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        # Maps [0, 1] -> [-1, 1]: (x - 0.5) / 0.5 = 2x - 1
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    split_df = pd.concat([
+        train_df.assign(split="train"),
+        val_df.assign(split="val"),
+        test_df.assign(split="test"),
     ])
+    split_df.to_csv(os.path.join(run_dir, "split.csv"), index=False)
+    log.info(f"Split -> train: {len(train_df)}, val: {len(val_df)}, test: {len(test_df)}")
 
-    print(f"Loading dataset from: {DATASET_PATH}...")
-    dataset = FlatImageDataset(root_dir=DATASET_PATH, transform=transform)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=2)
-    total_batches = len(dataloader)
+    # ---- Data loaders -------------------------------------------------------
+    train_tf, eval_tf = build_transforms(cfg["img_size"])
+    loader_kwargs = dict(batch_size=cfg["batch_size"], num_workers=cfg["num_workers"])
+    train_loader = DataLoader(JSRTDataset(train_df, cfg["image_dir"], train_tf),
+                              shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(JSRTDataset(val_df, cfg["image_dir"], eval_tf),
+                            shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(JSRTDataset(test_df, cfg["image_dir"], eval_tf),
+                             shuffle=False, **loader_kwargs)
 
-    print(f"Device: {DEVICE}")
-    print(f"Total Images: {len(dataset)} | Batches/Epoch: {total_batches} | Image Resolution: {IMG_SIZE}x{IMG_SIZE}")
+    # ---- Model, loss, optimizer, scheduler ----------------------------------
+    model = build_model(cfg["arch"], cfg["dropout"]).to(device)
 
-    # Initialize Model, Optimizer, and Diffusion Engine
-    model = SimpleUNet(in_channels=3, out_channels=3, base_dim=64).to(DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-    diffusion = Diffusion(timesteps=TIMESTEPS, device=DEVICE)
+    n_pos = train_df["label"].sum()
+    n_neg = len(train_df) - n_pos
+    pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32, device=device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable Parameters: {num_params:,}\n" + "=" * 95)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
+                                  weight_decay=cfg["weight_decay"])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg["epochs"])
 
-    if os.path.exists(CHECKPOINT_PATH):
-        print(f"\n[INFO] Found checkpoint: {CHECKPOINT_PATH}. Loading state...")
-        checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
-        
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        
-        last_epoch = checkpoint["epoch"]
-        START_EPOCH = last_epoch + 1
-        global_step = last_epoch * total_batches
-        
-        print(f"[INFO] Successfully resumed from Epoch {last_epoch}. "
-              f"Continuing from Epoch {START_EPOCH} (Step: {global_step:06d}) to {EPOCHS}.\n")
-    else:
-        print(f"[INFO] No checkpoint found at {CHECKPOINT_PATH}. Starting fresh from Epoch 1.\n")
-        global_step = 0
+    # ---- Training loop ------------------------------------------------------
+    history = []
+    best_auc, epochs_without_gain = -1.0, 0
+    best_path = os.path.join(run_dir, "best_model.pt")
+    last_path = os.path.join(run_dir, "last_model.pt")
 
-    print("=" * 95)
+    for epoch in range(1, cfg["epochs"] + 1):
+        start = time.time()
+        lr = optimizer.param_groups[0]["lr"]
 
-    for epoch in range(START_EPOCH, EPOCHS + 1):
-        epoch_start_time = time.time()
-        running_loss = 0.0
-        running_grad_norm = 0.0
+        tr_loss, tr_probs, tr_targets = run_epoch(model, train_loader, criterion,
+                                                  optimizer, device)
+        va_loss, va_probs, va_targets = run_epoch(model, val_loader, criterion,
+                                                  None, device)
+        scheduler.step()
 
-        for batch_idx, (images, _) in enumerate(dataloader):
-            batch_start = time.time()
-            images = images.to(DEVICE)
+        tr = compute_metrics(tr_targets, tr_probs, cfg["threshold"])
+        va = compute_metrics(va_targets, va_probs, cfg["threshold"])
+        elapsed = time.time() - start
 
-            # Sample random timesteps uniformly
-            t = torch.randint(0, TIMESTEPS, (images.shape[0],), device=DEVICE).long()
-            
-            # Forward process
-            x_noisy, noise = diffusion.q_sample(images, t)
-            
-            # Predict added noise
-            predicted_noise = model(x_noisy, t)
-            loss = F.mse_loss(predicted_noise, noise)
+        history.append({
+            "epoch": epoch, "lr": lr, "time_sec": round(elapsed, 1),
+            "train_loss": tr_loss, "train_acc": tr["accuracy"],
+            "train_error": tr["error"], "train_auc": tr["auc"],
+            "val_loss": va_loss, "val_acc": va["accuracy"],
+            "val_error": va["error"], "val_auc": va["auc"],
+            "val_sensitivity": va["sensitivity"], "val_specificity": va["specificity"],
+        })
+        pd.DataFrame(history).to_csv(os.path.join(run_dir, "history.csv"), index=False)
 
-            # Backpropagation
-            optimizer.zero_grad()
-            loss.backward()
-            
-            # Compute gradient norm for convergence tracking
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            running_loss += loss.item()
-            running_grad_norm += grad_norm.item()
-            global_step += 1
-            batch_dur = time.time() - batch_start
-
-            # Quantitative logging every 10 batches
-            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == total_batches:
-                avg_b_loss = running_loss / (batch_idx + 1)
-                avg_b_grad = running_grad_norm / (batch_idx + 1)
-                t_mean = t.float().mean().item()
-                t_min = t.min().item()
-                t_max = t.max().item()
-
-                print(
-                    f"Epoch [{epoch:03d}/{EPOCHS:03d}] | "
-                    f"Batch [{batch_idx + 1:04d}/{total_batches:04d}] | "
-                    f"Step: {global_step:06d} | "
-                    f"MSE Loss: {loss.item():.5f} (Avg: {avg_b_loss:.5f}) | "
-                    f"|Grad|: {grad_norm.item():.4f} | "
-                    f"t-stats [min: {t_min:3d}, avg: {t_mean:5.1f}, max: {t_max:3d}] | "
-                    f"Speed: {images.size(0) / batch_dur:.1f} img/s"
-                )
-
-        epoch_dur = time.time() - epoch_start_time
-        epoch_loss = running_loss / total_batches
-        epoch_grad = running_grad_norm / total_batches
-
-        print("-" * 95)
-        print(
-            f"EPOCH {epoch:03d} SUMMARY: "
-            f"Mean Loss: {epoch_loss:.6f} | "
-            f"Mean Grad Norm: {epoch_grad:.4f} | "
-            f"Duration: {epoch_dur:.2f}s"
+        log.info(
+            f"Epoch {epoch:03d}/{cfg['epochs']} | lr {lr:.2e} | {elapsed:.1f}s\n"
+            f"    train: loss {tr_loss:.4f}  acc {tr['accuracy']:.4f}  "
+            f"error {tr['error']:.4f}  AUC {tr['auc']:.4f}\n"
+            f"    val  : loss {va_loss:.4f}  acc {va['accuracy']:.4f}  "
+            f"error {va['error']:.4f}  AUC {va['auc']:.4f}  "
+            f"sens {va['sensitivity']:.4f}  spec {va['specificity']:.4f}"
         )
-        print("-" * 95)
 
-        # Generate sample images after each 5 epoch
-        if epoch % 5 == 0 or epoch == EPOCHS:
-            print(f"Sampling validation grid at Epoch {epoch}...")
-            sample_start = time.time()
-            samples = diffusion.p_sample_loop(model, num_samples=4, image_size=IMG_SIZE)
-            sample_path = os.path.join(OUTPUT_DIR, "samples", f"sample_epoch_{epoch:03d}.png")
-            utils.save_image(samples, sample_path, nrow=4)
-            print(f"Grid saved to {sample_path} (Generation took {time.time() - sample_start:.2f}s)\n")
+        save_checkpoint(last_path, model, cfg, epoch, va["auc"])
 
-        # Save checkpoint periodically
-        if epoch % 5 == 0 or epoch == EPOCHS:
-            ckpt_path = os.path.join(OUTPUT_DIR, "checkpoints", f"model_epoch_{epoch:03d}.pt")
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "loss": epoch_loss,
-            }, ckpt_path)
-            print(f"Checkpoint saved: {ckpt_path}\n")
+        if va["auc"] > best_auc:
+            best_auc = va["auc"]
+            epochs_without_gain = 0
+            save_checkpoint(best_path, model, cfg, epoch, va["auc"])
+            log.info(f"    New best model saved (val AUC {best_auc:.4f})")
+        else:
+            epochs_without_gain += 1
+            if epochs_without_gain >= cfg["patience"]:
+                log.info(f"Early stopping at epoch {epoch} (best val AUC {best_auc:.4f})")
+                break
+
+    # ---- Final test evaluation with the best checkpoint ---------------------
+    log.info("Evaluating the best model on the test set...")
+    model = load_checkpoint(best_path, device)
+    te_loss, te_probs, te_targets = run_epoch(model, test_loader, criterion, None, device)
+    te = compute_metrics(te_targets, te_probs, cfg["threshold"])
+    te["loss"] = te_loss
+
+    report = classification_report(
+        te_targets, (te_probs >= cfg["threshold"]).astype(int),
+        target_names=["Benign", "Malignant"], digits=4, zero_division=0,
+    )
+    log.info(f"\n===== Test results =====\n"
+             f"loss {te['loss']:.4f} | acc {te['accuracy']:.4f} | error {te['error']:.4f} | "
+             f"AUC {te['auc']:.4f} | sens {te['sensitivity']:.4f} | spec {te['specificity']:.4f}\n"
+             f"{report}")
+
+    with open(os.path.join(run_dir, "test_metrics.json"), "w") as f:
+        json.dump(te, f, indent=2)
+
+    pred_df = test_df.reset_index(drop=True).copy()
+    pred_df["probability"] = te_probs
+    pred_df["prediction"] = (te_probs >= cfg["threshold"]).astype(int)
+    pred_df.to_csv(os.path.join(run_dir, "test_predictions.csv"), index=False)
+
+    log.info(f"Done. All outputs saved to {run_dir}")
+
 
 if __name__ == "__main__":
-    train()
+    main()

@@ -223,4 +223,7 @@ __marimo__/
 *.docx
 *.pdf
 results/
-output/
+JSRT_output/
+RSNA_output/
+processed_RSNA_output/
+runs/

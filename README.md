@@ -19,12 +19,17 @@ Develop a modular, multi-stage geometric canonicalization pipeline that decouple
 
 #### Motivation
 
-Disease and anomaly detection using UNet is a key use case of AI in the medical field. We need to train the AI models as quickly as possible with the highest accuracy. Using a good structured dataset is a pivotal factor in model training. The X-ray can be performed on infants, and on elders above the age of 60. It is possible that their body shape is slightly deviated from the ideal outline of a chest.  
+Disease and anomaly detection using Deep Learning is a key use case of AI in the medical field. We need to train the AI models as quickly as possible with the highest accuracy. Using a good structured dataset is a pivotal factor in model training. The X-ray can be performed on infants, and on elders above the age of 60. It is possible that their body shape is slightly deviated from the ideal outline of a chest.  
 For infants, the size of the chest and lungs will be much smaller with respect to the frame of the image. It is also possible that the test subject is slightly off-center or rotated in the frame. These small errors compound while training the AI model. In this paper, we propose an algorithm to perform preprocessing on the dataset that will be used for training the AI model.
 
 ## Baseline
 
 Objective: To set up a baseline of the error experienced by machine learning models, such as diffusion models, while training on raw X-ray images before canonicalization.
+
+## Dataset Used
+
+1. JSRT - The JSRT Database is a standard digital chest radiograph collection developed in 1998 by the Japanese Society of Radiological Technology (JSRT) in collaboration with the Japanese Radiological Society (JRS) and US/Japan facilities. ([JSRT Dataset](https://www.kaggle.com/datasets/raddar/nodules-in-chest-xrays-jsrt))
+2. 
 
 ## Phase 1
 
@@ -170,7 +175,60 @@ Where `r` is the target height ratio (set at 0.75) and `h` is the bounding box h
 
 ### The Pipeline
 
-The final output of this phase is to produce a pipeline for preprocessing the dataset before using it to train the model. The proposed pipeline consists of four main modules: image alignment, lung segmentation, region-of-interest extraction, and geometric normalisation. The image alignment module corrects horizontal misalignment in the input chest X-ray to establish a consistent orientation for subsequent processing. The lung segmentation module uses a trained deep learning model to identify the lung regions and generate corresponding binary masks, separating the lungs from surrounding anatomical structures. The region-of-interest extraction module derives a bounding box from the segmented lung mask to identify the spatial extent of the lungs. Subsequently, the geometric normalisation module crops and transforms the identified region to achieve a standardised lung-region representation with a predefined aspect ratio. The normalised image is then saved for downstream tasks, such as feature extraction and disease classification. Additionally, the pipeline records alignment information and the affine transformation parameters to support traceability and consistency across processed images. If lung segmentation fails, the pipeline reports the absence of a valid lung region.
+The final output of this phase is to produce a pipeline for preprocessing the dataset before using it to train the model. The proposed pipeline consists of four main modules: image alignment, lung segmentation, region-of-interest extraction, and geometric normalisation.  
+The image alignment module corrects horizontal misalignment in the input chest X-ray to establish a consistent orientation for subsequent processing.  
+The lung segmentation module uses a pre-trained deep learning model to identify the lung regions and generate corresponding binary masks, separating the lungs from surrounding anatomical structures.  
+The region-of-interest extraction module derives a bounding box from the segmented lung mask to identify the spatial extent of the lungs.  
+Subsequently, the geometric normalisation module crops and transforms the identified region to achieve a standardised lung-region representation with a predefined aspect ratio.  
+The normalised image is then saved for downstream tasks, such as feature extraction and disease classification. Additionally, the pipeline records alignment information and the affine transformation parameters to support traceability and consistency across processed images. If lung segmentation fails, the pipeline reports the absence of a valid lung region.
+
+### <u>Evaluation</u>
+
+#### Preprocessing evaluation
+
+| Statistic          | Value   |
+| ------------------ | ------- |
+| Number of rows     | 1,327   |
+| Mean               | 10.1259 |
+| Median             | 8.0047  |
+| Standard deviation | 6.1727  |
+| Minimum            | 1.7087  |
+| 25th percentile    | 5.3000  |
+| 75th percentile    | 15.1885 |
+| 90th percentile    | 18.6550 |
+| 95th percentile    | 23.6082 |
+| Maximum            | 32.7503 |
+
+Above are the statistics of the preprocessing times it took to process those 1,321 images.
+
+#### Training evaluation
+
+<img src="public\val_specificity_comparison.png" alt="public\val_AUC_comparison.png" width="400" height="200">
+<img src="public\val_sensitivity_comparison.png" alt="public\val_AUC_comparison.png" width="400" height="200">
+<img src="public\val_AUC_comparison.png" alt="public\val_AUC_comparison.png" width="400" height="200">
+
+For the evaluation part, we have trained a ResNet-18 model on 1,321 X-ray images from the RSNA dataset. First, we trained the model on the raw dataset without any preprocessing. Then, we passed each of our images through the pipeline and got 1,321 images which have been preprocessed.
+
+From the graphs we plotted between the two training processes, we can make the following observations:
+
+* Preprocessing significantly boosts the sensitivity during the early-to-mid training process. That is, 0.75 compared to 0.55 to 0.62 without preprocessing.
+* The preprocessed model's specificity dips sharply before recovering, whereas the model without preprocessing maintains a consistently high specificity between 0.81 and 0.91.
+* The overall validation AUC remains relatively similar between both pipelines, hovering around 0.75 and 0.82. However, preprocessing gives us a slight peak advantage around epoch 4 but exhibits a sharp decline by epoch 7.
+
+### Observation
+
+The preprocessing pipeline was made keeping the JSRT dataset in mind, which is a much cleaner dataset as compared to the RSNA dataset on which the models were trained and tested.
+
+<img src="public\rotated.jpeg" alt="public\rotated.jpeg" width="300" height="300">
+<img src="public\no_lung_found.jpeg" alt="public\no_lung_found.jpeg" width="300" height="300">
+
+The images displayed above were some of the test cases where our preprocessing pipeline failed.
+
+The first image shows that the test subject was not aligned with the X-ray machine while the X-ray was being taken. This resulted in the X-ray being rotated nearly 20° to 30° clockwise.
+
+In the second image, the X-ray was not contrasted enough, which resulted in our model not being able to detect any lungs. The preprocessing pipeline returned a "no lung found" error during the execution on this particular image.
+
+Hence this warrants some additional preprocessing layers to be applied in the pipeline.
 
 ## Phase 3
 
