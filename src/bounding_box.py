@@ -4,7 +4,6 @@ import cv2
 import os
 from lung_mask import imwrite, segment_lungs
 
-IMAGE_PATH = "dataset/JSRT_images/JPCNN060.png"
 MODEL_PATH = "models/unet_lung_seg.pt"
 INPUT_SIZE = 512
 THRESHOLD = 0.5
@@ -28,7 +27,7 @@ def get_mask(image_path, model_path=MODEL_PATH, threshold=THRESHOLD):
     imwrite(out_path, mask)
     return mask
 
-def draw_bboxes(image, boxes, color=(0, 255, 0), thickness=3):
+def draw_bboxes(image, boxes, color=(0, 0, 255), thickness=3):
     bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     for x1, y1, x2, y2 in boxes:
         cv2.rectangle(bgr, (x1, y1), (x2, y2), color, thickness)
@@ -87,7 +86,7 @@ def draw(image_path, mode=1, out_dir="results"):
         raise ValueError(f"Unknown mode {mode}. Options: 1=per lung, 2=both lungs")
 
 if __name__=="__main__":
-    IMAGE_PATH = "dataset/JSRT_images/JPCLN095.png"
+    IMAGE_PATH = r"D:\Projects\lung_mesh\dataset\RSNA_jpeg\0a2f6cf6-1f45-44c8-bcf0-98a3b466b597.jpeg"
     model = load_model(MODEL_PATH)
     prob, mask, image = segment_lungs(IMAGE_PATH, model, THRESHOLD)
     draw(IMAGE_PATH, mode=1)

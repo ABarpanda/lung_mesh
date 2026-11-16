@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
-IMAGE_PATH = r"D:\Projects\lung_mesh\dataset\JSRT_images\JPCLN001.png"
+IMAGE_PATH = r"D:\Projects\lung_mesh\RSNA_output\03c6601a-9044-447d-8521-eca222ea1c1e.jpeg"
 
 image = Image.open(IMAGE_PATH).convert("L")
 array = np.asarray(image)

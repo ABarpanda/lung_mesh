@@ -221,7 +221,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 *.docx
-*.pdf
 results/
 JSRT_output/
 RSNA_output/

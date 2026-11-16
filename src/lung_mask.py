@@ -112,7 +112,7 @@ def get_outputs(image_path, model=None, model_path=MODEL_PATH, threshold=THRESHO
 
 def main():
     # get_outputs(r"dataset\JSRT_images\JPCLN095.png")
-    get_outputs(r"results\JPCLN095_aligned.png")
+    get_outputs(r"D:\Projects\lung_mesh\dataset\RSNA_jpeg\0a2f6cf6-1f45-44c8-bcf0-98a3b466b597.jpeg")
 
 if __name__ == "__main__":
     main()

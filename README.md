@@ -29,7 +29,7 @@ Objective: To set up a baseline of the error experienced by machine learning mod
 ## Dataset Used
 
 1. JSRT - The JSRT Database is a standard digital chest radiograph collection developed in 1998 by the Japanese Society of Radiological Technology (JSRT) in collaboration with the Japanese Radiological Society (JRS) and US/Japan facilities. ([JSRT Dataset](https://www.kaggle.com/datasets/raddar/nodules-in-chest-xrays-jsrt))
-2. 
+2.  
 
 ## Phase 1
 
@@ -203,9 +203,9 @@ Above are the statistics of the preprocessing times it took to process those 1,3
 
 #### Training evaluation
 
-<img src="public\val_specificity_comparison.png" alt="public\val_AUC_comparison.png" width="400" height="200">
-<img src="public\val_sensitivity_comparison.png" alt="public\val_AUC_comparison.png" width="400" height="200">
-<img src="public\val_AUC_comparison.png" alt="public\val_AUC_comparison.png" width="400" height="200">
+<img src="public\val_specificity_comparison.png" alt="public\val_specificity.png" width="400" height="200">
+<img src="public\val_sensitivity.png" alt="public\val_sensitivity.png" width="400" height="200">
+<img src="public\val_AUC.png" alt="public\val_AUC.png" width="400" height="200">
 
 For the evaluation part, we have trained a ResNet-18 model on 1,321 X-ray images from the RSNA dataset. First, we trained the model on the raw dataset without any preprocessing. Then, we passed each of our images through the pipeline and got 1,321 images which have been preprocessed.
 
@@ -233,3 +233,28 @@ Hence this warrants some additional preprocessing layers to be applied in the pi
 ## Phase 3
 
 For phase 3, we would venture into anatomical landmark detection and semantic parsing to create a more robust, uniform coordinate grid. We will use a transformation matrix `T` via bicubic or Lanczos interpolation.
+
+### Rotation
+
+<u>Fast Symmetry Axis Search</u>
+
+This code finds the line that best splits a grayscale image into mirror-symmetric halves, such as the body midline in a chest X-ray. It runs on the GPU and uses a coarse-to-fine search.
+
+1. **Line parameterization.** Each candidate axis is written in normal form, with coordinates measured from the image center: $$x\cos\theta + y\sin\theta = \rho$$ Here $\theta \in [0, \pi)$ is the normal angle and $\rho$ is the signed distance from the center. The line's direction is $(\theta + 90^\circ) \bmod 180^\circ$.
+
+2. **Reflection.** For each pixel $p = (x, y)$, the signed distance to the line is $$d = x\cos\theta + y\sin\theta - \rho$$ and its mirror image across the line is $$p' = p - 2d\,(\cos\theta, \sin\theta)$$ The reflected image is sampled at $p'$ with bilinear interpolation (`grid_sample`). Pixels whose mirror falls outside the image are excluded.
+
+3. **Error.** Each candidate is scored by the mean squared difference between the image and its reflection over the valid pixels: $$E(\theta, \rho) = \frac{1}{N_{\text{valid}}} \sum_{p \in \Omega} \big(I(p) - I(p')\big)^2$$
+Candidates with less than half the image overlapping are given infinite error, so the search can't win by reflecting mostly empty space.
+
+4. **Coarse search.** The image is resized to 128 px. The code tests 90 angles over $[0, \pi)$ in 2 px steps of $\rho$, then keeps the top 5 candidates by lowest error.
+
+5. **Fine search.** The image is resized to 256 px. Around each of the 5 candidates, the code tests angle offsets of ±0.25° and $\rho$ offsets of ±6 px, then keeps the global minimum.
+
+6. **Output.** The function returns the line angle, the y-intercept $$y_0 = y_c + \dfrac{\rho + x_c\cos\theta}{\sin\theta}$$ in original coordinates, the minimum error, and $\rho$.
+
+#### Evidence
+
+<img src="public\rotation_1.png" alt="public\rotation_1.png" width="200" height="200">
+<img src="public\rotation_2.png" alt="public\rotation_2.png" width="200" height="200">
+<img src="public\rotation_3.png" alt="public\rotation_3.png" width="200" height="200">
